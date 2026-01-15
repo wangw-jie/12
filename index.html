@@ -1,0 +1,528 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=0" />
+  <title>Gesture Heart Particles</title>
+  
+  <!-- Tailwind CSS -->
+  <script src="https://cdn.tailwindcss.com"></script>
+  
+  <!-- React & DOM -->
+  <script src="https://unpkg.com/react@18/umd/react.development.js" crossorigin></script>
+  <script src="https://unpkg.com/react-dom@18/umd/react-dom.development.js" crossorigin></script>
+  
+  <!-- Babel for in-browser JSX compilation -->
+  <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+
+  <!-- MediaPipe Libraries -->
+  <script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils/camera_utils.js" crossorigin="anonymous"></script>
+  <script src="https://cdn.jsdelivr.net/npm/@mediapipe/control_utils/control_utils.js" crossorigin="anonymous"></script>
+  <script src="https://cdn.jsdelivr.net/npm/@mediapipe/drawing_utils/drawing_utils.js" crossorigin="anonymous"></script>
+  <script src="https://cdn.jsdelivr.net/npm/@mediapipe/hands/hands.js" crossorigin="anonymous"></script>
+
+  <style>
+    body { margin: 0; background: #000; overflow: hidden; }
+    canvas { display: block; }
+  </style>
+<script type="importmap">
+{
+  "imports": {
+    "react": "https://aistudiocdn.com/react@^19.2.0",
+    "react-dom/": "https://aistudiocdn.com/react-dom@^19.2.0/",
+    "react/": "https://aistudiocdn.com/react@^19.2.0/",
+    "lucide-react": "https://aistudiocdn.com/lucide-react@^0.555.0"
+  }
+}
+</script>
+</head>
+<body>
+  <div id="root"></div>
+
+  <!-- Main Application Script -->
+  <script type="text/babel">
+    const { useState, useEffect, useRef, useCallback } = React;
+
+    // --- Icons (Inline SVGs to avoid dependency issues) ---
+    const IconHand = ({ size = 24, className = "" }) => (
+      <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className={className}>
+        <path d="M18 11V6a2 2 0 0 0-2-2v0a2 2 0 0 0-2 2v0"/>
+        <path d="M14 10V4a2 2 0 0 0-2-2v0a2 2 0 0 0-2 2v2"/>
+        <path d="M10 10.5V6a2 2 0 0 0-2-2v0a2 2 0 0 0-2 2v8"/>
+        <path d="M18 8a2 2 0 1 1 4 0v6a8 8 0 0 1-8 8h-2c-2.8 0-4.5-.86-5.99-2.34l-3.6-3.6a2 2 0 0 1 2.83-2.82L7 15"/>
+      </svg>
+    );
+
+    const IconGrip = ({ size = 24, className = "" }) => (
+      <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className={className}>
+        <circle cx="9" cy="12" r="1" />
+        <circle cx="9" cy="5" r="1" />
+        <circle cx="9" cy="19" r="1" />
+        <circle cx="15" cy="12" r="1" />
+        <circle cx="15" cy="5" r="1" />
+        <circle cx="15" cy="19" r="1" />
+      </svg>
+    );
+
+    // --- Types & Constants ---
+    const GestureType = {
+      NONE: 'NONE',
+      OPEN_HAND: 'OPEN_HAND',
+      CLOSED_FIST: 'CLOSED_FIST',
+    };
+
+    const PARTICLE_COUNT = 17000;
+    const IS_MOBILE = /iPhone|iPad|iPod|Android/i.test(navigator.userAgent);
+    // Mobile devices can struggle with very high particle counts and real-time ML on the same thread.
+    // Cap particles on mobile to keep hand tracking responsive.
+    const EFFECTIVE_PARTICLE_COUNT = IS_MOBILE ? Math.min(PARTICLE_COUNT, 6000) : PARTICLE_COUNT;
+    const HEART_COLOR = 'rgba(235, 60, 90, 0.8)';
+    const SCATTER_COLOR = 'rgba(100, 200, 255, 0.6)';
+
+    // --- Components ---
+
+    // 1. Particle Canvas Component
+    const ParticleCanvas = ({ handState }) => {
+      const canvasRef = useRef(null);
+      const particlesRef = useRef([]);
+      const animationFrameRef = useRef();
+      const handStateRef = useRef(handState);
+
+      // Keep the latest hand state without restarting the animation loop.
+      useEffect(() => {
+        handStateRef.current = handState;
+      }, [handState]);
+
+      // Initialize particles
+      useEffect(() => {
+        const canvas = canvasRef.current;
+        if (!canvas) return;
+
+        const width = window.innerWidth;
+        const height = window.innerHeight;
+        canvas.width = width;
+        canvas.height = height;
+
+        const particles = [];
+        for (let i = 0; i < EFFECTIVE_PARTICLE_COUNT; i++) {
+          particles.push({
+            x: Math.random() * width,
+            y: Math.random() * height,
+            originX: Math.random() * width,
+            originY: Math.random() * height,
+            vx: (Math.random() - 0.5) * 2,
+            vy: (Math.random() - 0.5) * 2,
+            size: Math.random() * 2 + 1,
+            color: HEART_COLOR,
+            friction: 0.95 + Math.random() * 0.04,
+            ease: 0.05 + Math.random() * 0.05,
+            // Add a fill factor for internal distribution
+            fill: Math.sqrt(Math.random()),
+          });
+        }
+        particlesRef.current = particles;
+
+        const handleResize = () => {
+          if (canvasRef.current) {
+            canvasRef.current.width = window.innerWidth;
+            canvasRef.current.height = window.innerHeight;
+          }
+        };
+
+        window.addEventListener('resize', handleResize);
+        return () => window.removeEventListener('resize', handleResize);
+      }, []);
+
+      const getHeartPosition = (t, scale, cx, cy) => {
+        const x = 16 * Math.pow(Math.sin(t), 3);
+        const y = -(13 * Math.cos(t) - 5 * Math.cos(2 * t) - 2 * Math.cos(3 * t) - Math.cos(4 * t));
+        return {
+          x: cx + x * scale,
+          y: cy + y * scale,
+        };
+      };
+
+      useEffect(() => {
+        const canvas = canvasRef.current;
+        if (!canvas) return;
+        const ctx = canvas.getContext('2d');
+        if (!ctx) return;
+
+        let time = 0;
+
+        const render = () => {
+          const width = canvas.width;
+          const height = canvas.height;
+          const particles = particlesRef.current;
+
+          const hs = handStateRef.current;
+          
+          let centerX = width / 2;
+          let centerY = height / 2;
+          
+          if (hs.isDetected) {
+            centerX = (1 - hs.position.x) * width;
+            centerY = hs.position.y * height;
+          }
+
+          ctx.fillStyle = 'rgba(0, 0, 0, 0.15)';
+          ctx.fillRect(0, 0, width, height);
+
+          time += 0.02;
+
+          particles.forEach((p, i) => {
+            if (hs.gesture === GestureType.CLOSED_FIST) {
+              const dx = p.x - centerX;
+              const dy = p.y - centerY;
+              const dist = Math.sqrt(dx * dx + dy * dy);
+              if (dist < 300) {
+                const force = (300 - dist) / 300;
+                p.vx += (dx / dist) * force * 5;
+                p.vy += (dy / dist) * force * 5;
+              }
+              
+              p.color = SCATTER_COLOR;
+              p.targetX = undefined;
+              p.targetY = undefined;
+              
+            } else {
+              const angle = (i / particles.length) * Math.PI * 2;
+              const beat = 1 + Math.sin(time * 3) * 0.05;
+              
+              // Use the particle's fill factor to scale the position
+              // This distributes particles inside the heart shape
+              const baseScale = Math.min(width, height) / 35 * beat;
+              const scale = baseScale * p.fill;
+              
+              const pos = getHeartPosition(angle, scale, centerX, centerY);
+              
+              p.targetX = pos.x;
+              p.targetY = pos.y;
+              p.color = HEART_COLOR;
+            }
+
+            if (p.targetX !== undefined && p.targetY !== undefined) {
+              const dx = p.targetX - p.x;
+              const dy = p.targetY - p.y;
+              p.vx += dx * p.ease * 0.1;
+              p.vy += dy * p.ease * 0.1;
+            } else {
+               p.vx += (Math.random() - 0.5) * 0.2;
+               p.vy += (Math.random() - 0.5) * 0.2;
+            }
+
+            p.vx *= p.friction;
+            p.vy *= p.friction;
+            p.x += p.vx;
+            p.y += p.vy;
+
+            if (p.x < 0) { p.x = 0; p.vx *= -1; }
+            if (p.x > width) { p.x = width; p.vx *= -1; }
+            if (p.y < 0) { p.y = 0; p.vy *= -1; }
+            if (p.y > height) { p.y = height; p.vy *= -1; }
+
+            ctx.beginPath();
+            ctx.arc(p.x, p.y, p.size, 0, Math.PI * 2);
+            ctx.fillStyle = p.color;
+            ctx.fill();
+          });
+
+          animationFrameRef.current = requestAnimationFrame(render);
+        };
+
+        render();
+
+        return () => {
+          if (animationFrameRef.current) cancelAnimationFrame(animationFrameRef.current);
+        };
+      }, []);
+
+      return <canvas ref={canvasRef} className="absolute inset-0 z-0" />;
+    };
+
+    // 2. Hand Tracker Component
+    // NOTE: iOS Safari requires camera requests to be triggered by a user gesture (tap).
+    // So we only start MediaPipe Camera when `enabled` becomes true.
+    const HandTracker = ({ enabled, onHandUpdate, onCameraReady }) => {
+      const videoRef = useRef(null);
+      const [debugMode, setDebugMode] = useState(false);
+      const handsRef = useRef(null);
+      const cameraRef = useRef(null);
+
+      useEffect(() => {
+        let isMounted = true;
+
+        if (!enabled) {
+          // Do not request camera permission until the user explicitly starts.
+          return () => {
+            isMounted = false;
+          };
+        }
+
+        const setupMediaPipe = async () => {
+          if (!window.Hands || !window.Camera) {
+            console.error("MediaPipe scripts not loaded");
+            return;
+          }
+
+          handsRef.current = new window.Hands({
+            locateFile: (file) => `https://cdn.jsdelivr.net/npm/@mediapipe/hands/${file}`,
+          });
+
+          handsRef.current.setOptions({
+            maxNumHands: 1,
+            modelComplexity: 1,
+            // Phones often need slightly lower thresholds to start tracking reliably.
+            minDetectionConfidence: IS_MOBILE ? 0.35 : 0.5,
+            minTrackingConfidence: IS_MOBILE ? 0.35 : 0.5,
+          });
+
+          handsRef.current.onResults((results) => {
+            if (!isMounted) return;
+
+            if (results.multiHandLandmarks && results.multiHandLandmarks.length > 0) {
+              const landmarks = results.multiHandLandmarks[0];
+              const wrist = landmarks[0];
+              const middleMcp = landmarks[9];
+              const centerX = (wrist.x + middleMcp.x) / 2;
+              const centerY = (wrist.y + middleMcp.y) / 2;
+
+              const tips = [8, 12, 16, 20];
+              let foldedFingers = 0;
+              
+              const refDist = Math.sqrt(
+                Math.pow(middleMcp.x - wrist.x, 2) + Math.pow(middleMcp.y - wrist.y, 2)
+              );
+
+              tips.forEach(tipIdx => {
+                 const tip = landmarks[tipIdx];
+                 const distToWrist = Math.sqrt(
+                   Math.pow(tip.x - wrist.x, 2) + Math.pow(tip.y - wrist.y, 2)
+                 );
+                 if (distToWrist < refDist * 1.5) foldedFingers++;
+              });
+
+              const thumbTip = landmarks[4];
+              const thumbDist = Math.sqrt(
+                 Math.pow(thumbTip.x - landmarks[17].x, 2) + Math.pow(thumbTip.y - landmarks[17].y, 2)
+               );
+              if(thumbDist < refDist) foldedFingers++;
+
+              let gesture = GestureType.OPEN_HAND;
+              if (foldedFingers >= 4) {
+                gesture = GestureType.CLOSED_FIST;
+              }
+
+              onHandUpdate({
+                isDetected: true,
+                position: { x: centerX, y: centerY },
+                gesture,
+              });
+            } else {
+              onHandUpdate({
+                isDetected: false,
+                position: { x: 0.5, y: 0.5 },
+                gesture: GestureType.NONE,
+              });
+            }
+          });
+
+          if (videoRef.current) {
+            cameraRef.current = new window.Camera(videoRef.current, {
+              onFrame: async () => {
+                if (handsRef.current && videoRef.current) {
+                  await handsRef.current.send({ image: videoRef.current });
+                }
+              },
+              width: 640,
+              height: 480,
+              // Best effort on mobile; camera_utils may ignore this depending on version.
+              facingMode: 'user',
+            });
+            
+            try {
+              await cameraRef.current.start();
+              onCameraReady(true);
+            } catch (e) {
+              console.error("Camera failed to start", e);
+              onCameraReady(false);
+            }
+          }
+        };
+
+        // Start immediately once enabled (user gesture already happened).
+        setupMediaPipe();
+
+        return () => {
+            isMounted = false;
+            if (cameraRef.current) cameraRef.current.stop();
+            if (handsRef.current) handsRef.current.close();
+        };
+      }, [enabled]);
+
+      return (
+        <div className="absolute top-4 right-4 z-50 flex flex-col items-end pointer-events-none">
+          <div className={`transition-opacity duration-500 ${debugMode ? 'opacity-100' : 'opacity-0'}`}>
+            <video 
+              ref={videoRef} 
+              className="w-32 h-24 bg-gray-800 rounded border border-gray-600 -scale-x-100" 
+              autoPlay
+              playsInline 
+              muted 
+            />
+            <div className="text-xs text-white mt-1 text-right">Debug View</div>
+          </div>
+          <button 
+            onClick={() => setDebugMode(!debugMode)}
+            className="pointer-events-auto mt-2 px-3 py-1 bg-white/10 hover:bg-white/20 backdrop-blur-md text-white text-xs rounded-full border border-white/20 transition-all"
+          >
+            {debugMode ? 'Hide Camera' : 'Show Camera'}
+          </button>
+        </div>
+      );
+    };
+
+    // 3. Main App Component
+    const App = () => {
+      const [handState, setHandState] = useState({
+        isDetected: false,
+        position: { x: 0.5, y: 0.5 },
+        gesture: GestureType.NONE,
+      });
+
+      const [cameraReady, setCameraReady] = useState(false);
+      const [permissionGranted, setPermissionGranted] = useState(true);
+      const [cameraEnabled, setCameraEnabled] = useState(false);
+      const [isSecureContext, setIsSecureContext] = useState(true);
+      const [isFileProtocol, setIsFileProtocol] = useState(false);
+
+      useEffect(() => {
+        // getUserMedia requires a secure context on iOS (HTTPS). file:// and most http:// will fail.
+        setIsSecureContext(!!window.isSecureContext);
+        setIsFileProtocol(window.location?.protocol === 'file:');
+      }, []);
+
+      const handleHandUpdate = useCallback((newState) => {
+        setHandState(newState);
+      }, []);
+
+      const handleCameraReady = (ready) => {
+        setCameraReady(ready);
+        if (!ready) setPermissionGranted(false);
+      };
+
+      return (
+        <div className="relative w-full h-screen bg-black overflow-hidden font-sans select-none">
+          <ParticleCanvas handState={handState} />
+          <HandTracker enabled={cameraEnabled} onHandUpdate={handleHandUpdate} onCameraReady={handleCameraReady} />
+
+          {/* Lightweight runtime status (helps debug on mobile without console) */}
+          <div className="absolute top-16 left-6 z-30 pointer-events-none text-xs text-white/70 bg-black/30 backdrop-blur px-3 py-2 rounded-lg border border-white/10">
+            <div>Camera: {cameraEnabled ? (cameraReady ? 'Ready' : 'Starting') : 'Off'}</div>
+            <div>Hand: {handState.isDetected ? 'Detected' : 'Not detected'} | Gesture: {handState.gesture}</div>
+          </div>
+
+          {/* Start/Permission Overlay (important for iPhone) */}
+          {!cameraEnabled && (
+            <div className="absolute inset-0 z-40 flex items-center justify-center px-6">
+              <div className="pointer-events-auto w-full max-w-md rounded-2xl border border-white/15 bg-black/60 backdrop-blur-md p-5 text-white">
+                <div className="text-lg font-semibold">启动摄像头</div>
+                <div className="mt-2 text-sm text-white/70 leading-relaxed">
+                  iPhone 上需要先点击按钮，浏览器才会弹出摄像头权限。
+                  {isFileProtocol && (
+                    <div className="mt-3 rounded-xl border border-yellow-500/40 bg-yellow-900/20 p-3 text-yellow-100">
+                      <div className="font-semibold">你正在用本地文件方式打开（file://）</div>
+                      <div className="mt-1 text-sm text-yellow-100/90">
+                        iPhone/Safari 对 <span className="font-mono">file://</span> 页面通常不会允许摄像头权限。
+                        需要把它通过 <span className="font-mono">https://</span> 方式打开（下面红框也会提示）。
+                      </div>
+                    </div>
+                  )}
+                  {!isSecureContext && (
+                    <div className="mt-3 rounded-xl border border-red-500/40 bg-red-900/20 p-3 text-red-200">
+                      <div className="font-semibold">当前不是安全环境（HTTPS）</div>
+                      <div className="mt-1 text-sm text-red-200/90">
+                        请用 <span className="font-mono">https://</span> 打开页面（或部署到 GitHub Pages / Netlify）。
+                        直接打开 <span className="font-mono">file://</span> 文件通常无法申请摄像头权限。
+                      </div>
+                    </div>
+                  )}
+                </div>
+
+                <button
+                  onClick={() => setCameraEnabled(true)}
+                  className="mt-4 w-full rounded-xl bg-pink-500/90 hover:bg-pink-500 text-white font-semibold py-3 transition disabled:opacity-40 disabled:cursor-not-allowed"
+                  disabled={!isSecureContext}
+                >
+                  点击开始
+                </button>
+                <div className="mt-3 text-xs text-white/50">
+                  提示：如果你已经授权过但仍无画面，请在 Safari 的“设置 → Safari → 摄像头”检查权限。
+                </div>
+              </div>
+            </div>
+          )}
+
+          {/* UI Overlay */}
+          <div className="absolute top-0 left-0 w-full p-6 z-10 pointer-events-none">
+            <h1 className="text-white text-3xl font-bold tracking-tighter mix-blend-screen opacity-90">
+              Particle<span className="text-pink-500">Heart</span>
+            </h1>
+            <p className="text-white/60 text-sm mt-1 max-w-md">
+              Control the heart with your hand. 
+            </p>
+          </div>
+
+          <div className="absolute bottom-8 left-1/2 -translate-x-1/2 flex flex-col items-center gap-4 z-20 pointer-events-none">
+            {!cameraReady && permissionGranted && cameraEnabled && (
+              <div className="animate-pulse text-white/80 bg-black/50 px-4 py-2 rounded-full backdrop-blur">
+                Initializing Camera & AI Model...
+              </div>
+            )}
+            {!permissionGranted && (
+              <div className="text-red-400 bg-red-900/20 border border-red-500/50 px-6 py-4 rounded-xl backdrop-blur text-center">
+                <p className="font-bold">需要摄像头权限</p>
+                <p className="text-sm">请在浏览器权限弹窗中选择允许，或在系统设置中开启。</p>
+              </div>
+            )}
+            {cameraReady && (
+              <div className={`flex items-center gap-6 transition-all duration-500 ${handState.isDetected ? 'opacity-100 translate-y-0' : 'opacity-40 translate-y-4'}`}>
+                <div className={`flex flex-col items-center gap-2 transition-transform duration-300 ${handState.gesture === GestureType.OPEN_HAND ? 'scale-110 text-pink-400' : 'text-white/40'}`}>
+                  <div className="p-3 bg-white/10 rounded-full backdrop-blur-md border border-white/10">
+                    <IconHand size={24} />
+                  </div>
+                  <span className="text-xs uppercase tracking-widest font-semibold">张开手掌聚集</span>
+                </div>
+                <div className="h-px w-12 bg-white/20"></div>
+                <div className={`flex flex-col items-center gap-2 transition-transform duration-300 ${handState.gesture === GestureType.CLOSED_FIST ? 'scale-110 text-blue-400' : 'text-white/40'}`}>
+                  <div className="p-3 bg-white/10 rounded-full backdrop-blur-md border border-white/10">
+                     <IconGrip size={24} />
+                  </div>
+                  <span className="text-xs uppercase tracking-widest font-semibold">握拳击散</span>
+                </div>
+              </div>
+            )}
+            {cameraReady && !handState.isDetected && (
+               <div className="text-white/50 text-sm bg-black/30 px-3 py-1 rounded-full backdrop-blur animate-pulse">
+                 将手放置在镜头前
+               </div>
+            )}
+          </div>
+          
+          {handState.gesture === GestureType.OPEN_HAND && handState.isDetected && (
+              <div className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 z-0 pointer-events-none">
+                 <div className="text-white text-6xl font-bold opacity-20 blur-sm animate-pulse tracking-widest">
+                    LOVE
+                 </div>
+              </div>
+          )}
+        </div>
+      );
+    };
+
+    // --- Render ---
+    const root = ReactDOM.createRoot(document.getElementById('root'));
+    root.render(<App />);
+  </script>
+</body>
+</html>
