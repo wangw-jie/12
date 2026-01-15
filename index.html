@@ -72,6 +72,10 @@
     };
 
     const PARTICLE_COUNT = 17000;
+    const IS_MOBILE = /iPhone|iPad|iPod|Android/i.test(navigator.userAgent);
+    // Mobile devices can struggle with very high particle counts and real-time ML on the same thread.
+    // Cap particles on mobile to keep hand tracking responsive.
+    const EFFECTIVE_PARTICLE_COUNT = IS_MOBILE ? Math.min(PARTICLE_COUNT, 6000) : PARTICLE_COUNT;
     const HEART_COLOR = 'rgba(235, 60, 90, 0.8)';
     const SCATTER_COLOR = 'rgba(100, 200, 255, 0.6)';
 
@@ -82,6 +86,12 @@
       const canvasRef = useRef(null);
       const particlesRef = useRef([]);
       const animationFrameRef = useRef();
+      const handStateRef = useRef(handState);
+
+      // Keep the latest hand state without restarting the animation loop.
+      useEffect(() => {
+        handStateRef.current = handState;
+      }, [handState]);
 
       // Initialize particles
       useEffect(() => {
@@ -94,7 +104,7 @@
         canvas.height = height;
 
         const particles = [];
-        for (let i = 0; i < PARTICLE_COUNT; i++) {
+        for (let i = 0; i < EFFECTIVE_PARTICLE_COUNT; i++) {
           particles.push({
             x: Math.random() * width,
             y: Math.random() * height,
@@ -144,13 +154,15 @@
           const width = canvas.width;
           const height = canvas.height;
           const particles = particlesRef.current;
+
+          const hs = handStateRef.current;
           
           let centerX = width / 2;
           let centerY = height / 2;
           
-          if (handState.isDetected) {
-            centerX = (1 - handState.position.x) * width;
-            centerY = handState.position.y * height;
+          if (hs.isDetected) {
+            centerX = (1 - hs.position.x) * width;
+            centerY = hs.position.y * height;
           }
 
           ctx.fillStyle = 'rgba(0, 0, 0, 0.15)';
@@ -159,7 +171,7 @@
           time += 0.02;
 
           particles.forEach((p, i) => {
-            if (handState.gesture === GestureType.CLOSED_FIST) {
+            if (hs.gesture === GestureType.CLOSED_FIST) {
               const dx = p.x - centerX;
               const dy = p.y - centerY;
               const dist = Math.sqrt(dx * dx + dy * dy);
@@ -223,7 +235,7 @@
         return () => {
           if (animationFrameRef.current) cancelAnimationFrame(animationFrameRef.current);
         };
-      }, [handState]);
+      }, []);
 
       return <canvas ref={canvasRef} className="absolute inset-0 z-0" />;
     };
@@ -260,8 +272,9 @@
           handsRef.current.setOptions({
             maxNumHands: 1,
             modelComplexity: 1,
-            minDetectionConfidence: 0.5,
-            minTrackingConfidence: 0.5,
+            // Phones often need slightly lower thresholds to start tracking reliably.
+            minDetectionConfidence: IS_MOBILE ? 0.35 : 0.5,
+            minTrackingConfidence: IS_MOBILE ? 0.35 : 0.5,
           });
 
           handsRef.current.onResults((results) => {
@@ -402,6 +415,12 @@
         <div className="relative w-full h-screen bg-black overflow-hidden font-sans select-none">
           <ParticleCanvas handState={handState} />
           <HandTracker enabled={cameraEnabled} onHandUpdate={handleHandUpdate} onCameraReady={handleCameraReady} />
+
+          {/* Lightweight runtime status (helps debug on mobile without console) */}
+          <div className="absolute top-16 left-6 z-30 pointer-events-none text-xs text-white/70 bg-black/30 backdrop-blur px-3 py-2 rounded-lg border border-white/10">
+            <div>Camera: {cameraEnabled ? (cameraReady ? 'Ready' : 'Starting') : 'Off'}</div>
+            <div>Hand: {handState.isDetected ? 'Detected' : 'Not detected'} | Gesture: {handState.gesture}</div>
+          </div>
 
           {/* Start/Permission Overlay (important for iPhone) */}
           {!cameraEnabled && (
